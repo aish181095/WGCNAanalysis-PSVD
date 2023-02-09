@@ -409,17 +409,33 @@ abline(h=0.25, col = "red")
 #dev.off()
 ```
 
+```{r}
+#dynamic tree cut
+dynamicMods = cutreeDynamic(dendro = geneTree, distM=dissTOM, method="hybrid", minClusterSize = minModuleSize, deepSplit = 4);
+table(dynamicMods)
+```
+
+```{r}
+dynamicColors = labels2colors(dynamicMods)
+table(dynamicColors)
+```
+```{r}
+plotDendroAndColors(geneTree, dynamicColors, "Dynamic Tree Cut", dendroLabels = FALSE, hang = 0.03, addGuide = TRUE, guideHang = 0.05, main = "Gene dendrogram and module colors")
+```
+
+
+```{r}
+##merge modules 
+merge <- WGCNA :: mergeCloseModules(combined.filtered, dynamicColors, cutHeight = 0.20,
+                                           verbose = 3) 
+```
+
 
 
 ```{r}
 ####From this point on we can set the parameters to merge similar modules, if needed. 
 ####high value for merging, very small not merging.
-MEDissThres = 0.25
 
-# Plot the cut line into the dendrogram
-
-# Call an automatic merging function
-merge = mergeCloseModules(combined.filtered, dynamicColors, cutHeight = MEDissThres, verbose = 3)
 # The merged module colors
 mergedColors = merge$colors;
 # Eigengenes of the new merged modules:
