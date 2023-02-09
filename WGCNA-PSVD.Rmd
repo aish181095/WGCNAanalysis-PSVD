@@ -1,0 +1,750 @@
+---
+title: "WGNA_PSVD"
+author: "Aishwarya"
+date: "8/3/2022"
+output: html_document
+---
+
+
+
+# Script and session info
+Script name: WGCNA-PSVD.Rmd
+
+Purpose of script: Using gene co-expression network to functionally analyse mRNA and miRNA expression trends in colon cancer progression 
+Author: Aishwarya Iyer
+
+Date Created: 03-08-2022
+
+## Session info:
+R version 3.10 
+Platform: x86_64-w64-mingw32/x64 (64-bit)
+Running under: Windows 10 x64 
+
+# Set up environment
+```{r}
+#clear workspace and set string as factors to false
+#rm(list=ls())
+options(stringsAsFactors = F)
+
+```
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Install required packages
+```{r,echo=FALSE}
+#BiocManager::install("WGCNA")
+##install devtools
+#install.packages("devtools") #if needed
+#install PANEV
+#library("devtools")
+#install_github("vpalombo/PANEV")
+#BiocManager::install("clusterProfiler")
+library(AnnotationDbi)
+library(preprocessCore)
+library(GO.db)
+library(WGCNA)
+library(rstudioapi)
+library(dplyr)
+library(biomaRt)
+library(clusterProfiler)
+#library(PANEV)
+```
+
+
+```{r}
+setwd(dirname(rstudioapi::getActiveDocumentContext()$path))
+```
+
+
+```{r}
+#Import variant file
+normalised_gene_expression<- read.delim("normalised-data.txt",header=TRUE)
+
+#remove samples with missing gender information 
+normalised_data = subset(normalised_gene_expression, select = -c(HNL07,HNL13, HNL14) )
+
+#remove diseased sample (B09. 28015) as corresponding clinical data not available ( might have been a cirrhotic misdiagnosed case)
+normalised_data = subset(normalised_data, select = -c(PSVD17))
+ 
+```
+
+
+```{r}
+#import clinical data 
+
+library(readxl)
+clinical_data_intial <- read_excel("clinical_data_intial.xlsx")
+View(clinical_data_intial) 
+
+
+#remove samples with missing sex in clinical data 
+
+clinical_1<-clinical_data_intial[-c(7,13,14),]
+clinical_1<-clinical_1[1:28,]
+
+rownames(clinical_1)<-colnames(normalised_data)
+
+
+```
+
+
+
+
+# check if there are samples with missing data
+```{r}
+gsg = goodSamplesGenes(normalised_data, verbose = 3);
+gsg$allOK
+
+# remove rows with all low expression
+combined.filtered <- normalised_data[rowSums(normalised_data) > 0.5, , drop=TRUE]
+combined.filtered <- as.data.frame(t(as.matrix(combined.filtered)))
+
+#combined.filtered_selected<-data.frame(combined.filtered[1:32,])
+```
+
+```{r}
+#png("hierachical clustering.png", width = 1000, height = 1000)
+sampleTree = stats::hclust(as.dist(combined.filtered), method = "ward.D2");
+
+# Plot the sample tree: Open a graphic output window of size 12 by 9 inches
+# The user should change the dimensions if the window is too large or too small.
+sizeGrWindow(12,9)
+#pdf(file = "Plots/sampleClustering.pdf", width = 12, height = 9);
+par(cex = 0.6);
+par(mar = c(0,4,2,0))
+plot(sampleTree, main = "Sample clustering to detect outliers", hang=-1,sub="", xlab="", cex.lab = 1.5, 
+     cex.axis = 1.5, cex.main = 2)
+#dev.off()
+
+
+```
+
+
+
+```{r}
+#select clinical variables 
+
+clinical_1<-subset(clinical_1, select = c('diag', 'Gender', 'Associated disease', 'Ascites at diagnosis', 'HVPG', 'whvp', 'PLAT_diag', 'BI_total_diag', 'Spleen', 'Fibroscan','No associated condition', 'Hematological associated condition', 'Associated cosnition HIV' ))
+rownames(clinical_1)<-colnames(normalised_data)
+
+#convert categorical variables to numeric levels 
+
+#first conver the cat columns to factors 
+
+clinical_1$diag<-as.factor(clinical_1$diag)
+clinical_1$Gender<-as.factor(clinical_1$Gender)
+clinical_1$`Associated disease`<-as.factor(clinical_1$`Associated disease`)
+clinical_1$`Ascites at diagnosis`<-as.factor(clinical_1$`Ascites at diagnosis`)
+
+
+#convert cate to numeric levels 
+
+clinical_1$diag<-unclass(clinical_1$diag)
+clinical_1$Gender<-unclass(clinical_1$Gender)
+clinical_1$`Associated disease`<-unclass(clinical_1$`Associated disease`)
+clinical_1$`Ascites at diagnosis`<-unclass(clinical_1$`Ascites at diagnosis`)
+
+#convert character columsn to numeric
+clinical_1$diag<-as.numeric(clinical_1$diag)
+clinical_1$Gender<-as.numeric(clinical_1$Gender)
+clinical_1$`Associated disease`<-as.numeric(clinical_1$`Associated disease`)
+clinical_1$`Ascites at diagnosis`<-as.numeric(clinical_1$`Ascites at diagnosis`)
+clinical_1$HVPG<-as.numeric(clinical_1$HVPG)
+clinical_1$whvp<-as.numeric(clinical_1$whvp)
+clinical_1$PLAT_diag<-as.numeric(clinical_1$PLAT_diag)
+clinical_1$BI_total_diag <-as.numeric(clinical_1$BI_total_diag)
+clinical_1$Spleen<-as.numeric(clinical_1$Spleen)
+clinical_1$Fibroscan<-as.numeric(clinical_1$Fibroscan)
+
+#clinical_1<-as.matrix(clinical_1)
+
+```
+
+#merge together the filtered table with the information from the Giannakis dataset
+```{r}
+# Re-cluster samples
+sampleTree2 = stats::hclust(as.dist(combined.filtered), method = "ward.D2")
+# Convert traits to a color representation: white means low, red means high, grey means missing entry
+traitColors = numbers2colors(clinical_1, signed = FALSE);
+sizeGrWindow(12,12)
+
+# Plot the sample dendrogram and the colors underneath.
+plotDendroAndColors(sampleTree2, traitColors,
+                    groupLabels = names(clinical_1), 
+                    main = "Sample dendrogram and trait heatmap",
+                    addGuide = TRUE)
+##stage 2.14 and stage 4.4 outliers 
+
+```
+
+
+
+```{r}
+save(combined.filtered, trait_data, file = "WGCNA-input.RData")
+```
+
+
+
+
+
+#########################################
+Network construction and module detection
+#########################################
+
+```{r}
+# Allow multi-threading within WGCNA. This helps speed up certain calculations.
+# At present this call is necessary for the code to work.
+# Any error here may be ignored but you may want to update WGCNA if you see one.
+# Caution: skip this line if you run RStudio or other third-party R environments. 
+# See note above.
+
+enableWGCNAThreads(nThreads = 8)# Load the data saved in the first part
+#lnames = load(file = "WGCNA-input.RData");
+#The variable lnames contains the names of loaded variables.
+#lnames
+```
+
+```{r}
+# Choose a set of soft-thresholding powers
+
+powers = c(c(1:10), seq(from = 12, to=30, by=2))
+# Call the network topology analysis function
+sft = pickSoftThreshold(combined.filtered, powerVector = powers, verbose = 5, networkType = "signed")#using unsigned option
+# Plot the results:
+sizeGrWindow(9, 5)
+par(mfrow = c(1,2));
+cex1 = 0.9;
+# Scale-free topology fit index as a function of the soft-thresholding power
+plot(sft$fitIndices[,1], -sign(sft$fitIndices[,3])*sft$fitIndices[,2],
+     xlab="Soft Threshold (power)",ylab="Scale Free Topology Model Fit, signed R^2",type="n",
+     main = paste("Scale independence"));
+text(sft$fitIndices[,1], -sign(sft$fitIndices[,3])*sft$fitIndices[,2],
+     labels=powers,cex=cex1,col="red");
+# this line corresponds to using an R^2 cut-off of h
+abline(h=0.90,col="red")
+# Mean connectivity as a function of the soft-thresholding power
+plot(sft$fitIndices[,1], sft$fitIndices[,5],
+     xlab="Soft Threshold (power)",ylab="Mean Connectivity", type="n",
+     main = paste("Mean connectivity"))
+text(sft$fitIndices[,1], sft$fitIndices[,5], labels=powers, cex=cex1,col="red")
+#choosing power 5 to get a sclae free network
+```
+
+
+
+```{r}
+# Choose a set of soft-thresholding powers
+
+powers = c(c(1:10), seq(from = 12, to=30, by=2))
+# Call the network topology analysis function
+sft = pickSoftThreshold(combined.filtered, powerVector = powers, verbose = 5, networkType = "signed hybrid")#using unsigned option
+# Plot the results:
+sizeGrWindow(9, 5)
+par(mfrow = c(1,2));
+cex1 = 0.9;
+# Scale-free topology fit index as a function of the soft-thresholding power
+plot(sft$fitIndices[,1], -sign(sft$fitIndices[,3])*sft$fitIndices[,2],
+     xlab="Soft Threshold (power)",ylab="Scale Free Topology Model Fit,unsigned R^2",type="n",
+     main = paste("Scale independence"));
+text(sft$fitIndices[,1], -sign(sft$fitIndices[,3])*sft$fitIndices[,2],
+     labels=powers,cex=cex1,col="red");
+# this line corresponds to using an R^2 cut-off of h
+abline(h=0.9,col="red")
+# Mean connectivity as a function of the soft-thresholding power
+plot(sft$fitIndices[,1], sft$fitIndices[,5],
+     xlab="Soft Threshold (power)",ylab="Mean Connectivity", type="n",
+     main = paste("Mean connectivity"))
+text(sft$fitIndices[,1], sft$fitIndices[,5], labels=powers, cex=cex1,col="red")
+#choosing power 5 to get a sclae free network
+```
+
+```{r}
+# here we define the adjacency matrix using soft thresholding with beta=6
+#ADJ1=abs(cor(combined.filtered,use="p"))^14
+# When you have relatively few genes (<5000) use the following code
+#k=as.vector(apply(ADJ1,2,sum, na.rm=T))
+# When you have a lot of genes use the following code
+k=softConnectivity(datE=combined.filtered,power=16, type="signed")
+# Plot a histogram of k and a scale free topology plot
+sizeGrWindow(10,5)
+par(mfrow=c(1,2))
+hist(k)
+scaleFreePlot(k, main="Check scale free topology\n")
+
+```
+
+
+```{r}
+softPower = 16;
+adjacency = adjacency(combined.filtered, power = softPower, type = "signed");
+```
+
+
+```{r}
+# Turn adjacency into topological overlap
+TOM = TOMsimilarity(adjacency, TOMType = "signed");
+dissTOM = 1-TOM
+```
+
+
+
+```{r}
+# Transform dissTOM with a power to make moderately strong connections more visible in the heatmap
+plotTOM = dissTOM^16;
+# Set diagonal to NA for a nicer plot
+diag(plotTOM) = NA;
+# Call the plot function
+sizeGrWindow(9,9)
+TOMplot(plotTOM, geneTree, moduleColors, main = "Network heatmap plot, all genes")
+```
+
+
+```{r}
+library(gplots)
+myheatcol = colorpanel(250,'red',"orange",'lemonchiffon')
+TOMplot(plotTOM, geneTree, moduleColors, main = "Network heatmap plot, all genes", col=myheatcol)
+```
+
+
+
+
+
+```{r}
+#automatic
+net = blockwiseModules(combined.filtered, 
+                       power = 14, 
+                       corType= "pearson", 
+                       networkType = "signed hybrid",
+                       TOMType = "unsigned", 
+                       minModuleSize = 30,
+                       maxBlockSize = 17400,
+                       reassignThreshold = 1e-6, 
+                       deepSplit = 2, 
+                       mergeCutHeight = 0.20, 
+                       numericLabels = TRUE, 
+                       pamRespectsDendro = FALSE,
+                       saveTOMs = FALSE, 
+                       verbose = 3)
+```
+```{r}
+# open a graphics window
+sizeGrWindow(15, 9)
+# Convert labels to colors for plotting
+mergedColors = labels2colors(net$colors)
+# Plot the dendrogram and the module colors underneath
+plotDendroAndColors(net$dendrograms[[1]], mergedColors[net$blockGenes[[1]]],
+                    "Module colors",
+                    dendroLabels = FALSE, hang = 0.03,
+                    addGuide = TRUE, guideHang = 0.05)
+
+```
+
+
+```{r}
+# Call the hierarchical clustering function
+geneTree = flashClust(as.dist(dissTOM), method = "average");
+# Plot the resulting clustering tree (dendrogram)
+#sizeGrWindow(12,12)
+plot(geneTree, xlab="", sub="", main = "Gene clustering on TOM-based dissimilarity",
+labels = FALSE, hang = 0.07);
+
+```
+
+
+```{r}
+###module detection#############
+###set minimum module size
+minModuleSize = 30;
+# Module identification using dynamic tree cut:
+dynamicMods = cutreeDynamic(dendro = geneTree, 
+                            distM = dissTOM, 
+                            deepSplit = 2, 
+                            cutHeight = "tree",
+                            pamRespectsDendro = FALSE,
+minClusterSize = minModuleSize);
+table(dynamicMods)
+```
+
+
+```{r}
+# Convert numeric lables into colors
+dynamicColors = labels2colors(dynamicMods)
+table(dynamicColors)
+# Plot the dendrogram and colors underneath
+sizeGrWindow(8,6)
+#pdf("gene_tree_colorsv2.pdf")
+plotDendroAndColors(geneTree, dynamicColors, "Dynamic Tree Cut",
+dendroLabels = FALSE, hang = 0.03,
+addGuide = TRUE, guideHang = 0.05,
+main = "Gene dendrogram and module colors")
+
+
+#dev.off()
+```
+
+
+```{r}
+##cluster modules together that their expression is similar
+MEList = moduleEigengenes(combined.filtered, colors = dynamicColors)
+# Calculate dissimilarity of module eigengenes
+MEs = MEList$eigengenes
+# Calculate dissimilarity of module eigengenes
+MEDiss = 1-cor(MEs);
+# Cluster module eigengenes
+METree = hclust(as.dist(MEDiss), method = "average");
+```
+
+
+
+
+```{r}
+####plot clustering of modules
+sizeGrWindow(7, 6)
+#pdf("Clustering of module eigengenes.pdf")
+plot(METree, main = "Clustering of module eigengenes",
+xlab = "", sub = "")
+abline(h=0.25, col = "red")
+#dev.off()
+```
+
+
+
+```{r}
+####From this point on we can set the parameters to merge similar modules, if needed. 
+####high value for merging, very small not merging.
+MEDissThres = 0.25
+
+# Plot the cut line into the dendrogram
+
+# Call an automatic merging function
+merge = mergeCloseModules(combined.filtered, dynamicColors, cutHeight = MEDissThres, verbose = 3)
+# The merged module colors
+mergedColors = merge$colors;
+# Eigengenes of the new merged modules:
+mergedMEs = merge$newMEs;
+#dev.off()
+```
+
+
+
+```{r}
+sizeGrWindow(12, 9)
+diagnosis= as.data.frame(clinical_1$diag)
+names(diagnosis)="diagnosis"
+GS.diagnosis = as.numeric(cor(combined.filtered, diagnosis, use="p"))
+GS.diagColor = numbers2colors(GS.diagnosis, signed = T)
+#datColors = data.frame(moduleColorsAutomatic, GS.weightColor)[net$blockGenes[[blocknumber]], 
+ #   ]
+####plot the new merged modules
+#pdf(file = "HDgeneDendro_merged_modules_0.1.pdf", wi = 9, he = 6)
+plotDendroAndColors(geneTree, cbind(dynamicColors, mergedColors),
+c("Dynamic Tree Cut", "Merged dynamic"),
+dendroLabels = FALSE, hang = 0.03,
+addGuide = TRUE, guideHang = 0.05)
+#abline(h=MEDissThres, col = "red")
+#dev.off()
+```
+
+
+```{r}
+# Rename to moduleColors
+moduleColors = mergedColors
+# Construct numerical labels corresponding to the colors
+colorOrder = c("grey", standardColors(50));
+moduleLabels = match(moduleColors, colorOrder)-1;
+MEs = mergedMEs;
+
+
+```
+
+
+
+```{r}
+nGenes=ncol(combined.filtered)
+nSamples=nrow(combined.filtered)
+MEs0=moduleEigengenes(combined.filtered,moduleColors)$eigengenes
+MEs=orderMEs(MEs0)
+
+moduleTraitCor = cor(MEs, clinical_1, use = "p");
+moduleTraitPvalue = corPvalueStudent(moduleTraitCor, nSamples);
+```
+
+```{r}
+sizeGrWindow(12, 12)
+# Plot the relationships among the eigengenes and the trait
+plotEigengeneNetworks(MEs, "", marDendro = c(0, 4, 1, 2), marHeatmap = c(3, 
+    4, 1, 2), cex.lab = 0.8, xLabelsAngle = 90)
+```
+
+
+
+
+```{r}
+# Will display correlations and their p-values
+textMatrix <- paste(signif(moduleTraitCor, 2), "\n(",
+                    signif(moduleTraitPvalue, 1), ")", sep = "");
+                    dim(textMatrix) = dim(moduleTraitCor)
+                    par(mar = c(6, 8.5, 3, 3));
+```
+
+
+```{r}
+sizeGrWindow(50,50)
+pdf("thres_modules_hd_traits.pdf")
+# Will display correlations and their p-values
+textMatrix = paste(signif(moduleTraitCor, 2), "\n(",
+signif(moduleTraitPvalue, 1), ")", sep = "");
+dim(textMatrix) = dim(moduleTraitCor)
+par(mar = c(6, 8.5, 3, 3));
+# Display the correlation values within a heatmap plot
+labeledHeatmap(Matrix = moduleTraitCor,
+xLabels = names(clinical_1),
+yLabels = names(MEs),
+ySymbols = names(MEs),
+colorLabels = FALSE,
+colors = blueWhiteRed(50),
+textMatrix = textMatrix,
+setStdMargins = FALSE,
+cex.text = 0.4,
+zlim = c(-1,1),
+main = paste("Module-trait relationships"))
+dev.off()
+
+```
+
+```{r}
+##calculate intramosular connectivity 
+#ADJ1=abs(cor(datExpr,use="p"))^6
+Alldegrees1=intramodularConnectivity(adjacency, moduleColors, scaleByMax = FALSE)
+head(Alldegrees1)
+```
+
+
+```{r}
+colorlevels=unique(moduleColors)
+sizeGrWindow(9,6)
+par(mfrow=c(2,6))
+par(mar = c(4,5,3,1))
+for (i in c(1:12))
+{
+whichmodule=colorlevels[[i]];
+restrict1 = (moduleColors==whichmodule);
+verboseScatterplot(Alldegrees1$kWithin[restrict1],
+GS.diagnosis[restrict1], col=moduleColors[restrict1],
+main=whichmodule,
+xlab = "Connectivity", ylab = "Gene Significance", abline = TRUE)
+}
+```
+
+```{r}
+colorlevels=unique(moduleColors)
+sizeGrWindow(9,6)
+par(mfrow=c(2,5))
+par(mar = c(4,5,3,1))
+for (i in c(13:22))
+{
+whichmodule=colorlevels[[i]];
+restrict1 = (moduleColors==whichmodule);
+verboseScatterplot(Alldegrees1$kWithin[restrict1],
+GS.diagnosis[restrict1], col=moduleColors[restrict1],
+main=whichmodule,
+xlab = "Connectivity", ylab = "Gene Significance", abline = TRUE)
+}
+```
+
+
+```{r}
+##module membership 
+
+###signedKME
+
+hobag=signedKME(combined.filtered, MEs, outputColumnName="kME", corFnc="cor", corOptions= "use = 'p'")
+#write.table(hobag, file='hobag.csv', sep='\t')
+
+#ADJ1=abs(cor(combined.filtered,use="p"))^14
+#Alldegrees1=intramodularConnectivity(ADJ1, colorh1)
+#write.table(Alldegrees1, file='connectivity.csv', sep='\t')
+
+
+```
+
+
+```{r}
+
+colorOfColumn = substring(names(hobag), 4)
+par(mfrow = c(2, 4))
+selectModules = c("lightpink3", "coral1", "darkviolet", "darkslateblue","lightcyan1")
+par(mfrow = c(2, length(selectModules)/2))
+for (module in selectModules) {
+    column = match(module, colorOfColumn)
+    restModule = moduleColors == module
+    verboseScatterplot(hobag[restModule, column], GS.diagnosis[restModule], xlab = paste("Module Membership ", 
+        module, "module"), ylab = "GS.diagnosis", main = paste("kME.", module, 
+        "vs. GS"), col = module)
+}
+```
+
+
+```{r}
+
+colorOfColumn = substring(names(hobag), 4)
+par(mfrow = c(2, 4))
+selectModules = c("plum2", "navajowhite2", "plum", "darkorange","darkolivegreen", "lightpink4", "palevioletred3", "skyblue")
+par(mfrow = c(2, length(selectModules)/2))
+for (module in selectModules) {
+    column = match(module, colorOfColumn)
+    restModule = moduleColors == module
+    verboseScatterplot(hobag[restModule, column], GS.diagnosis[restModule], xlab = paste("Module Membership ", 
+        module, "module"), ylab = "GS.diagnosis", main = paste("kME.", module, 
+        "vs. GS"), col = module)
+}
+```
+
+
+
+```{r}
+#FilterGenes= abs(Alldegrees1)> 0.2 & abs(hobag$kMElightpink3)> 0.8
+#FilterGenes= abs(hobag$kMElightpink3)> 0.8 & abs(Alldegrees1)> 0.6
+FilterGenes= (hobag$kMEdarkorange)>= 0.7 & abs(Alldegrees1$kWithin)>= 10
+table(FilterGenes)
+```
+
+
+
+
+```{r}
+# Define variable time containing the stage column of trait data
+diagnosis = as.data.frame(clinical_1$diag);
+names(diagnosis) = "diagnosis"
+# names (colors) of the modules
+modNames = substring(names(MEs), 3)
+
+geneModuleMembership = as.data.frame(cor(combined.filtered, MEs, use = "p"));
+MMPvalue = as.data.frame(corPvalueStudent(as.matrix(geneModuleMembership), nSamples));
+
+names(geneModuleMembership) = paste("MM", modNames, sep="");
+names(MMPvalue) = paste("p.MM", modNames, sep="");
+
+geneTraitSignificance = as.data.frame(cor(combined.filtered, diagnosis, use = "p"));
+GSPvalue = as.data.frame(corPvalueStudent(as.matrix(geneTraitSignificance), nSamples));
+
+names(geneTraitSignificance) = paste("GS.", names(diagnosis), sep="");
+names(GSPvalue) = paste("p.GS.", names(diagnosis), sep="");
+```
+
+
+```{r}
+# Create the starting data frame containing gene id , module they are present in, significance and correlation for each gene
+geneInfo0 = data.frame(Gene.Symbol = colnames(combined.filtered),
+                      moduleColor = moduleColors,
+                      geneTraitSignificance,
+                      GSPvalue)
+
+##selecting modules with higher than 0.6 correlation
+darkorange_module<-subset(geneInfo0,moduleColor=="darkorange")
+
+
+#add in kme column and the intramodular connectivity 
+darkorange_module$kMEdarkorange = hobag$kMEdarkorange[match(row.names(darkorange_module), row.names(hobag))]
+darkorange_module$kWithin<-  Alldegrees1$kWithin[match(row.names(darkorange_module), row.names(Alldegrees1))]
+
+darkorange_module<-subset(darkorange_module, p.GS.diagnosis<=0.01 & abs(GS.diagnosis)>=0.6 & kWithin >=50)
+write.table(darkorange_module$Gene.Symbol, "topgenes.txt", na ="", row.names=FALSE,  sep='\t', quote=FALSE)
+```
+
+
+
+```{r}
+#ranking for gsea 
+darkorange_module$ranking<-darkorange_module$GS.diagnosis*-log10(darkorange_module$p.GS.diagnosis)
+```
+
+
+```{r}
+#performing over representation analysis for pathways using KEGG 
+#creating dataframe with ensemble id, entrez id and gene symbols.
+gene.df <- bitr(ensemble_gene_list$V1, fromType = "ENSEMBL",
+        toType = c("ENTREZID", "SYMBOL"),
+        OrgDb = org.Hs.eg.db)
+
+#over representation analysis using KEGG 
+over_rep_pathways <- data.frame(enrichKEGG(gene= gene.df$ENTREZID,
+                                organism     = 'hsa',
+                                pvalueCutoff = 0.05))
+#print the result
+head(over_rep_pathways)
+```
+
+```{r}
+
+```
+
+
+###################################
+Community clustering
+###################################
+
+
+```{r}
+library(igraph)
+
+
+
+```
+
+
+
+
+###################################
+Network visualization 
+###################################
+
+```{r}
+
+# Create a list of all the available organisms for biomaRt annotation
+list <- panev.biomartSpecies(string = NULL)
+# Look for a specific organism matching a search string for biomaRt annotation
+list <- panev.biomartSpecies(string = "Human")
+#select the correct organism fo interest
+biomart.species.bos <- as.character(list[1,1])
+# Prepare the dataset for panev.network function converting gene name from ensembl to entrez id
+ensemble_id<-getBM(attributes=c('ensembl_gene_id','entrezgene_id'),
+                filter='entrezgene_id',
+                values=green_module_genes$Gene.Symbol,
+                mart=ensembl)
+#create dataframe of ensemble gene id 
+ensemble_gene_list<-data.frame(ensemble_id$ensembl_gene_id)
+#assign columnnames 
+colnames(ensemble_gene_list)<-c("ensemble_id")
+#export the ensemble gene id as a text file
+write.table(ensemble_gene_list,"ensemble gene list.txt",row.names = F,quote = F)
+
+#ensemble_gene_list<-read.table("ensemble gene list.txt",header = F,stringsAsFactors = F)
+# Preparation of the dataset for panev.network function, converting gene name from entrez to ensembl id
+genelist.converted <- panev.dataPreparation(in.file = "ensemble gene list.txt", 
+                                          gene_id = "ensembl", 
+                                          biomart.species = biomart.species.bos)
+#export the dataframe containing entrex id, ensemble gen id and gene symbols 
+write.table(genelist.converted,"data.txt",row.names = F,quote = F)
+#get the pathway list from KEGG
+list <- panev.pathList(string = NULL)#path:map04146 path:map00730 path:map00740 path:map00750 path:map01524 path:map02010 path:map04514
+#Idenify the pathways of interest ( were selected using information from functional annoation clustering DAVID and ORA for pathways)
+FL.gene <- c("path:map04146", "path:map00730", "path:map00740", "path:map00750","path:map01524","path:map02010","path:map04514")
+write.table(list,"list.txt")
+
+# Create a list of all available organisms in KEGG
+list <- panev.speciesCode(string = "human")
+#select appropriate organism
+KEGG.species.bos <- as.character(list[1,2])
+#Perform PANEV
+panev.network(in.file = "data.txt", 
+              out.file = "example", 
+              species = KEGG.species.bos, 
+              FL = FL.gene, 
+              levels = 2)
+#Export the files to folder PANEV_RESULTS_example. The HTML file can be used to visulaize the network
+genes.1L <- read.table("C:\\Users\\HP\\Desktop\\Network Biology\\project\\Colon\\MicroRNA-Gene-Network-Colon\\Data\\PANEV_RESULTS_example\\1Lgenes.txt", header = TRUE)
+```
+Note that the `echo = FALSE` parameter was added to the code chunk to prevent printing of the R code that generated the plot.
